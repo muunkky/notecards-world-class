@@ -1,288 +1,95 @@
 import { useState } from 'react'
-import { collection, doc, addDoc, updateDoc, deleteDoc, serverTimestamp, writeBatch, query, where, getDocs } from 'firebase/firestore'
-import { db } from '../firebase/firebase'
-import { useAuth } from '../providers/AuthProvider'
-import type { Card } from '../types'
+import { Card } from '../types'
+import { moveCardInDeck, createCardInDeck, updateCardInDeck, deleteCardFromDeck } from '../firebase/firestore'
 
-// TDD: Implementation driven by our comprehensive test suite
-
-interface UseCardOperationsResult {
-  createCard: (title: string, body?: string) => Promise<Card>
-  updateCard: (cardId: string, updates: Partial<Omit<Card, 'id' | 'deckId' | 'createdAt' | 'orderIndex'>>) => Promise<void>
-  deleteCard: (cardId: string) => Promise<void>
-  reorderCards: (cardIds: string[]) => Promise<void>
-  moveCardUp: (cardId: string, currentCards: Card[]) => Promise<void>
-  moveCardDown: (cardId: string, currentCards: Card[]) => Promise<void>
+export interface UseCardOperationsResult {
+  createCard: (deckId: string, title: string, content: string) => Promise<void>
+  updateCard: (cardId: string, updates: Partial<Card>) => Promise<void>
+  deleteCard: (cardId: string, deckId: string) => Promise<void>
+  moveCardUp: (cardId: string, cards: Card[]) => Promise<void>
+  moveCardDown: (cardId: string, cards: Card[]) => Promise<void>
   loading: boolean
   error: string | null
 }
 
-export const useCardOperations = (deckId: string): UseCardOperationsResult => {
+export function useCardOperations(): UseCardOperationsResult {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { user } = useAuth()
 
-  const createCard = async (title: string, body: string = ''): Promise<Card> => {
-    if (!user) {
-      throw new Error('User must be authenticated')
-    }
-
-    if (!deckId) {
-      throw new Error('Deck ID is required')
-    }
-
-    if (!title.trim()) {
-      throw new Error('Card title is required')
-    }
-
+  const createCard = async (deckId: string, title: string, content: string): Promise<void> => {
     setLoading(true)
     setError(null)
-
     try {
-      // Get the current highest order index for this deck
-      const cardsRef = collection(db, 'cards')
-      const q = query(cardsRef, where('deckId', '==', deckId))
-      const existingCards = await getDocs(q)
-      const maxOrderIndex = existingCards.docs.reduce((max, doc) => {
-        const orderIndex = doc.data().orderIndex || 0
-        return Math.max(max, orderIndex)
-      }, -1)
-
-      // Create card in Firestore
-      const cardData = {
-        deckId,
-        title: title.trim(),
-        body: body.trim(),
-        orderIndex: maxOrderIndex + 1,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }
-      
-      const docRef = await addDoc(collection(db, 'cards'), cardData)
-      
-      // Also update the deck's card count and timestamp
-      const deckRef = doc(db, 'decks', deckId)
-      await updateDoc(deckRef, {
-        cardCount: existingCards.docs.length + 1,
-        updatedAt: serverTimestamp()
-      })
-      
-      const newCard: Card = {
-        id: docRef.id,
-        deckId,
-        title: title.trim(),
-        body: body.trim(),
-        orderIndex: maxOrderIndex + 1,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      }
-
-      console.log('Created card in Firestore:', newCard)
-      setLoading(false)
-      setError(null)
-      return newCard
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to create card'
+      await createCardInDeck(deckId, title, content)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create card'
       setError(errorMessage)
-      setLoading(false)
+      console.error('Failed to create card:', err)
       throw err
+    } finally {
+      setLoading(false)
     }
   }
 
-  const updateCard = async (cardId: string, updates: Partial<Omit<Card, 'id' | 'deckId' | 'createdAt' | 'orderIndex'>>): Promise<void> => {
-    if (!user) {
-      throw new Error('User must be authenticated')
-    }
-
-    if (!cardId.trim()) {
-      throw new Error('Card ID is required')
-    }
-
+  const updateCard = async (cardId: string, updates: Partial<Card>): Promise<void> => {
     setLoading(true)
     setError(null)
-
     try {
-      // Update card in Firestore
-      const cardRef = doc(db, 'cards', cardId)
-      
-      const updateData = {
-        ...updates,
-        updatedAt: serverTimestamp()
-      }
-
-      await updateDoc(cardRef, updateData)
-      
-      // Also update the deck's timestamp
-      const deckRef = doc(db, 'decks', deckId)
-      await updateDoc(deckRef, {
-        updatedAt: serverTimestamp()
-      })
-      
-      console.log('Updated card in Firestore:', cardId, 'with', updates)
-      
-      setLoading(false)
-      setError(null)
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to update card'
+      await updateCardInDeck(cardId, updates)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update card'
       setError(errorMessage)
-      setLoading(false)
+      console.error('Failed to update card:', err)
       throw err
+    } finally {
+      setLoading(false)
     }
   }
 
-  const deleteCard = async (cardId: string): Promise<void> => {
-    if (!user) {
-      throw new Error('User must be authenticated')
-    }
-
-    if (!cardId.trim()) {
-      throw new Error('Card ID is required')
-    }
-
+  const deleteCard = async (cardId: string, deckId: string): Promise<void> => {
     setLoading(true)
     setError(null)
-
     try {
-      // Delete card from Firestore
-      const cardRef = doc(db, 'cards', cardId)
-      await deleteDoc(cardRef)
-      
-      // Update the deck's card count and timestamp
-      const cardsRef = collection(db, 'cards')
-      const q = query(cardsRef, where('deckId', '==', deckId))
-      const remainingCards = await getDocs(q)
-      
-      const deckRef = doc(db, 'decks', deckId)
-      await updateDoc(deckRef, {
-        cardCount: remainingCards.docs.length,
-        updatedAt: serverTimestamp()
-      })
-      
-      console.log('Deleted card from Firestore:', cardId)
-      
-      setLoading(false)
-      setError(null)
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to delete card'
+      await deleteCardFromDeck(cardId, deckId)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete card'
       setError(errorMessage)
-      setLoading(false)
+      console.error('Failed to delete card:', err)
       throw err
+    } finally {
+      setLoading(false)
     }
   }
 
-  const reorderCards = async (cardIds: string[]): Promise<void> => {
-    if (!user) {
-      throw new Error('User must be authenticated')
-    }
-
-    if (!cardIds.length) {
-      throw new Error('Card IDs are required')
-    }
-
+  const moveCardUp = async (cardId: string, cards: Card[]): Promise<void> => {
     setLoading(true)
     setError(null)
-
     try {
-      // Use a batch to update all card order indices atomically
-      const batch = writeBatch(db)
-      
-      cardIds.forEach((cardId, index) => {
-        const cardRef = doc(db, 'cards', cardId)
-        batch.update(cardRef, {
-          orderIndex: index,
-          updatedAt: serverTimestamp()
-        })
-      })
-      
-      // Also update the deck's timestamp
-      const deckRef = doc(db, 'decks', deckId)
-      batch.update(deckRef, {
-        updatedAt: serverTimestamp()
-      })
-      
-      await batch.commit()
-      
-      console.log('Reordered cards in Firestore:', cardIds)
-      
-      setLoading(false)
-      setError(null)
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to reorder cards'
+      console.log('Successfully moved card up:', cardId)
+      await moveCardInDeck(cardId, cards, 'up')
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to move card up'
       setError(errorMessage)
-      setLoading(false)
+      console.error('Failed to move card up:', err)
       throw err
+    } finally {
+      setLoading(false)
     }
   }
 
-  const moveCardUp = async (cardId: string, currentCards: Card[]): Promise<void> => {
-    if (!user) {
-      throw new Error('User must be authenticated')
-    }
-
-    const cardIndex = currentCards.findIndex(card => card.id === cardId)
-    if (cardIndex <= 0) {
-      throw new Error('Card cannot be moved up')
-    }
-
+  const moveCardDown = async (cardId: string, cards: Card[]): Promise<void> => {
     setLoading(true)
     setError(null)
-
     try {
-      // Create new order by swapping the card with the one above it
-      const newCardOrder = [...currentCards]
-      const cardToMove = newCardOrder[cardIndex]
-      const cardAbove = newCardOrder[cardIndex - 1]
-      
-      // Swap positions
-      newCardOrder[cardIndex - 1] = cardToMove
-      newCardOrder[cardIndex] = cardAbove
-      
-      // Use the existing reorderCards function
-      const cardIds = newCardOrder.map(card => card.id)
-      await reorderCards(cardIds)
-      
-      console.log('Moved card up:', cardId)
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to move card up'
+      console.log('Successfully moved card down:', cardId)
+      await moveCardInDeck(cardId, cards, 'down')
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to move card down'
       setError(errorMessage)
-      setLoading(false)
+      console.error('Failed to move card down:', err)
       throw err
-    }
-  }
-
-  const moveCardDown = async (cardId: string, currentCards: Card[]): Promise<void> => {
-    if (!user) {
-      throw new Error('User must be authenticated')
-    }
-
-    const cardIndex = currentCards.findIndex(card => card.id === cardId)
-    if (cardIndex >= currentCards.length - 1 || cardIndex === -1) {
-      throw new Error('Card cannot be moved down')
-    }
-
-    setLoading(true)
-    setError(null)
-
-    try {
-      // Create new order by swapping the card with the one below it
-      const newCardOrder = [...currentCards]
-      const cardToMove = newCardOrder[cardIndex]
-      const cardBelow = newCardOrder[cardIndex + 1]
-      
-      // Swap positions
-      newCardOrder[cardIndex + 1] = cardToMove
-      newCardOrder[cardIndex] = cardBelow
-      
-      // Use the existing reorderCards function
-      const cardIds = newCardOrder.map(card => card.id)
-      await reorderCards(cardIds)
-      
-      console.log('Moved card down:', cardId)
-    } catch (err: any) {
-      const errorMessage = err.message || 'Failed to move card down'
-      setError(errorMessage)
+    } finally {
       setLoading(false)
-      throw err
     }
   }
 
@@ -290,7 +97,6 @@ export const useCardOperations = (deckId: string): UseCardOperationsResult => {
     createCard,
     updateCard,
     deleteCard,
-    reorderCards,
     moveCardUp,
     moveCardDown,
     loading,
